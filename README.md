@@ -3,17 +3,21 @@ Adds the sshd into the initramfs.
 
 ## Install
 
+   - make deb file
+
+    ./make.astrasshd.deb
+
+   - distribute
+
+    scp ... or in other ways
+
    - specify the path to the root authorized_keys
 
     debconf-set-selections << EOF
     astrasshd astrasshd/authorized_keys string /root/.ssh/authorized_keys
     EOF
-
-   - make deb file
-
-    ./make.astrasshd.deb
-
-   - distribute and install on any PC
+   
+   - install deb
 
     dpkg -i astrasshd.deb
 
