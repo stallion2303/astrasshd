@@ -48,6 +48,7 @@ fi
 
 copy_exec /usr/sbin/sshd /sbin/sshd
 copy_exec /usr/sbin/nologin /sbin/nologin
+copy_exec /lib/x86_64-linux-gnu/libnss_dns.so.2
 
 cat << \CREATEFILE >$DESTDIR/etc/ssh/sshd_config
 PermitRootLogin                 prohibit-password
@@ -72,7 +73,7 @@ CREATEFILE
 
 cat << \CREATEFILE >$DESTDIR/etc/profile
 if [ -n "$SSH_TTY" ]; then
-    export PS1='initramfs-ssh:${PWD}# '
+    export PS1='[\u@\H:\w]# '
 fi
 
 if [ -n "$TERM" ]; then
@@ -93,6 +94,28 @@ prereqs()
      echo "$PREREQ"
 }
 
+validate_ip()
+{
+    if echo "$1" | \
+        { IFS=. read a b c d e;
+            [ -n "$a" ] && [ -n "$b" ] &&
+            [ -n "$c" ] && [ -n "$d" ] &&
+            \
+            [ -n "${a##*[!0-9]*}" ] && [ -n "${b##*[!0-9]*}" ] &&
+            [ -n "${c##*[!0-9]*}" ] && [ -n "${d##*[!0-9]*}" ] &&
+            \
+            [ "$a" -ge 0 ] && [ "$a" -le 255 ] &&
+            [ "$b" -ge 0 ] && [ "$b" -le 255 ] &&
+            [ "$c" -ge 0 ] && [ "$c" -le 255 ] &&
+            [ "$d" -ge 0 ] && [ "$d" -le 255 ] &&
+            [ -z "$e" ]
+        } && [ "${1#"${1%?}"}" != "." ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 case $1 in
 prereqs)
      prereqs
@@ -102,15 +125,15 @@ esac
 
 . scripts/functions
 
+sed 's/ /\n/g' /proc/cmdline \
+ | grep -qE '^force_sshd(=.+)?$' || exit 0
+
 chvt 1
 run_scripts /scripts/panic
 
-cat /proc/cmdline \
- | sed 's/ /\n/g' \
- | grep -q '^force_sshd$' && {
-    LI="$(ip -f link -o addr list | awk '/^[0-9]*\:.*link\/ether/{gsub(":$","",$2);print $2}')"
-    FI="$(echo "$LI" | head -n1)"
-    cat << OUTPUT
+LI="$(ip -f link -o addr list | awk '/^[0-9]*\:.*link\/ether/{gsub(":$","",$2);print $2}')"
+FI="$(echo "$LI" | head -n1)"
+cat << OUTPUT
 ----------------------------------
 | Network needs to be configured |
 ----------------------------------
@@ -122,99 +145,123 @@ Examples: static:$FI:1.1.1.2:24:1.1.1.1:001122334455
           dhcp:$FI
           dhcp:$FI:001122334455
 OUTPUT
-    while true; do
-        read -r -p "Configure the network: " CN
-        CF="$(echo "$CN" | awk -F':' '{print $1}')"
-        IF="$(echo "$CN" | awk -F':' '{print $2}')"
 
-        case "$CF" in
-            dhcp)
-                IF_FOUND=no
-                for v0 in $LI; do
-                    [ "$IF" = "$v0" ] && IF_FOUND=yes && break
-                done
-                [ "$IF_FOUND" = "no" ] && echo "IF not found" && continue
+while :; do
+    read -r -p "Configure the network: " CN
+    CF="$(echo "$CN" | awk -F':' '{print $1}')"
+    IF="$(echo "$CN" | awk -F':' '{print $2}')"
 
-                MA="$(echo "$CN" | awk -F':' '{print $3}')"
-                if [ -n "$MA" ]; then
-                    test -z "${MA##*[!0-9A-Fa-f]*}" ||
-                    test ${#MA} -ne 12 && echo "MACADDRESS not valid" && continue
-                    ip link set dev "$IF" address "${MA:0:2}:${MA:2:2}:${MA:4:2}:${MA:6:2}:${MA:8:2}:${MA:10:2}"
-                fi
-
-                ipconfig -t 10 -c "$CF" -d "$IF"
-
-                break;;
-            static)
-                IP="$(echo "$CN" | awk -F':' '{print $3}')"
-                PR="$(echo "$CN" | awk -F':' '{print $4}')"
-                GW="$(echo "$CN" | awk -F':' '{print $5}')"
-                MA="$(echo "$CN" | awk -F':' '{print $6}')"
-
-                if ! echo "$IP" | \
-                    { IFS=. read a b c d e;
-                        test -n "$a" && test -n "$b" &&
-                        test -n "$c" && test -n "$d" &&
-                        \
-                        test -n "${a##*[!0-9]*}" && test -n "${b##*[!0-9]*}" &&
-                        test -n "${c##*[!0-9]*}" && test -n "${d##*[!0-9]*}" &&
-                        \
-                        test "$a" -ge 0 && test "$a" -le 255 &&
-                        test "$b" -ge 0 && test "$b" -le 255 &&
-                        test "$c" -ge 0 && test "$c" -le 255 &&
-                        test "$d" -ge 0 && test "$d" -le 255 &&
-                        test -z "$e"
-                    } || [ "${IP#"${IP%?}"}" = "." ]; then echo "IP not valid" && continue; fi
-
-                if ! echo "$PR" | \
-                    { read a;
-                        test -n "${a##*[!0-9]*}" &&
-                        test "$a" -ge 0 && test "$a" -le 32
-                    }; then echo "PREFIX not valid" && continue; fi
-
-                if ! echo "$GW" | \
-                    { IFS=. read a b c d e;
-                        test -n "$a" && test -n "$b" &&
-                        test -n "$c" && test -n "$d" &&
-                        \
-                        test -n "${a##*[!0-9]*}" && test -n "${b##*[!0-9]*}" &&
-                        test -n "${c##*[!0-9]*}" && test -n "${d##*[!0-9]*}" &&
-                        \
-                        test "$a" -ge 0 && test "$a" -le 255 &&
-                        test "$b" -ge 0 && test "$b" -le 255 &&
-                        test "$c" -ge 0 && test "$c" -le 255 &&
-                        test "$d" -ge 0 && test "$d" -le 255 &&
-                        test -z "$e"
-                    } || [ "${GW#"${GW%?}"}" = "." ]; then echo "GW not valid" && continue; fi
-
-                if [ -n "$MA" ]; then
-                    test -z "${MA##*[!0-9A-Fa-f]*}" ||
-                    test ${#MA} -ne 12 && echo "MACADDRESS not valid" && continue
-                    ip link set dev "$IF" address "${MA:0:2}:${MA:2:2}:${MA:4:2}:${MA:6:2}:${MA:8:2}:${MA:10:2}"
-                fi
-
-                ip link set dev "$IF" up
-                ip address add "$IP"/"$PR" dev "$IF"
-                ip route add default via "$GW"
-
-                break;;
-            *)
-                echo "Valid only static|dhcp"
-                continue;;
-        esac
+    IF_FOUND=no
+    for v0 in $LI; do
+        [ "$IF" = "$v0" ] && IF_FOUND=yes && break
     done
+    [ "$IF_FOUND" = "no" ] && printf 'IF %s not found\n' "$IF" && continue
 
-    echo "Starting SSH on $IP port 22 ..."
-    mkdir -p -m 0755 /run/sshd
-    /sbin/sshd -D -e
-}
+    case "$CF" in
+        dhcp)
+            MA="$(echo "$CN" | awk -F':' '{print $3}')"
+            if [ -n "$MA" ]; then
+                [ -z "${MA##*[!0-9A-Fa-f]*}" ] ||
+                [ ${#MA} -ne 12 ] && printf 'MACADDRESS %s not valid\n' "$MA" && continue
+                ip link set dev "$IF" address "${MA:0:2}:${MA:2:2}:${MA:4:2}:${MA:6:2}:${MA:8:2}:${MA:10:2}"
+            fi
+
+            ipconfig -t 30 -c "$CF" -d "$IF"
+            IP="$(ipconfig -n "$IF" | sed -rn 's/^.*address\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')"
+
+            echo "Setting up the resolv.conf from dhcp"
+            ipconfig -n "$IF" \
+             | sed -rn 's/\s*dns[0-9]+\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/\nnameserver \1\n/gp;\
+                        s/\s*domain\s*:\s*(.+)$/\nsearch \1/p' \
+             | grep -E '^(nameserver|search)' >/etc/resolv.conf
+
+            break
+            ;;
+        static)
+            IP="$(echo "$CN" | awk -F':' '{print $3}')"
+            PR="$(echo "$CN" | awk -F':' '{print $4}')"
+            GW="$(echo "$CN" | awk -F':' '{print $5}')"
+            MA="$(echo "$CN" | awk -F':' '{print $6}')"
+
+            validate_ip "$IP" || { printf 'IP %s not valid\n' "$IP"; continue; }
+
+            if ! echo "$PR" | \
+                { read a;
+                    [ -n "${a##*[!0-9]*}" ] &&
+                    [ "$a" -ge 0 ] && [ "$a" -le 32 ]
+                }; then printf 'PREFIX %s not valid\n' "$PR" && continue; fi
+
+            validate_ip "$GW" || { printf 'GW %s not valid\n' "$GW"; continue; }
+
+            if [ -n "$MA" ]; then
+                [ -z "${MA##*[!0-9A-Fa-f]*}" ] ||
+                [ ${#MA} -ne 12 ] && printf 'MACADDRESS %s not valid\n' "$MA" && continue
+                ip link set dev "$IF" address "${MA:0:2}:${MA:2:2}:${MA:4:2}:${MA:6:2}:${MA:8:2}:${MA:10:2}"
+            fi
+
+            ip link set dev "$IF" up
+            ip address add "$IP"/"$PR" dev "$IF"
+            ip route add default via "$GW"
+
+            cat << OUTPUT
+------------------------
+| Setup DNS resolution |
+------------------------
+Format: DNS1[:DNS2[:SEARCH]]
+If DNS1 is skip then DNS is not setup, later you can do it in the file /etc/resolv.conf
+Examples: 1.1.1.1:2.2.2.2:company
+          skip
+OUTPUT
+
+            while :; do
+                read -r -p "Setup DNS: " DNS
+
+                [ "$DNS" = 'skip' ] && break
+
+                DNS1="$(echo "$DNS" | awk -F':' '{print $1}')"
+                DNS2="$(echo "$DNS" | awk -F':' '{print $2}')"
+                SEARCH="$(echo "$DNS" | awk -F':' '{print $3}')"
+
+                validate_ip "$DNS1" || { printf 'DNS1 %s not valid\n' "$DNS1"; continue; }
+                printf "nameserver %s\n" "$DNS1" >/etc/resolv.conf
+
+                if [ -n "$DNS2" ]; then
+                    validate_ip "$DNS2" || { printf 'DNS2 %s not valid\n' "$DNS2"; continue; }
+                    printf "nameserver %s\n" "$DNS2" >>/etc/resolv.conf
+                fi
+
+                if [ -n "$SEARCH" ]; then
+                    [ -z "${SEARCH##*[!0-9a-zA-Z_. -]*}" ] && { printf 'SEARCH %s not valid\n' "$SEARCH"; continue; }
+                    printf "search %s\n" "$SEARCH" >>/etc/resolv.conf
+                fi
+
+                break
+            done
+
+            break
+            ;;
+        *)
+            echo "Valid only static|dhcp"
+            continue
+            ;;
+    esac
+done
+
+if [ "$(hostname)" = '(none)' ]; then
+    echo "Setting the hostname to $IP"
+    hostname "$IP"
+fi
+
+echo "Starting SSH on $IP port 22 ..."
+mkdir -p -m 0755 /run/sshd
+/sbin/sshd -4 -D -e
 EOF
 chmod +x "$TMP/usr/share/initramfs-tools/scripts/local-bottom/${NAME}_script"
 
 mkdir -p "$TMP/DEBIAN"
 cat << EOF >"$TMP/DEBIAN/control"
 Package: $NAME
-Version: 16.07.2021
+Version: $(date '+%d.%m.%Y')
 Section: admin
 Priority: optional
 Architecture: all
