@@ -137,7 +137,6 @@ cat << OUTPUT
 ----------------------------------
 | Network needs to be configured |
 ----------------------------------
-List interfaces: $(echo "$LI" | tr '\n' ' ')
 Format: static:IF:IP:PREFIX:GATEWAY[:MACADDRESS]
         dhcp:IF[:MACADDRESS]
 Examples: static:$FI:1.1.1.2:24:1.1.1.1:001122334455
@@ -147,9 +146,11 @@ Examples: static:$FI:1.1.1.2:24:1.1.1.1:001122334455
 OUTPUT
 
 while :; do
-    read -r -p "Configure the network: " CN
+    read -r -p "Configure the network[$(echo "$LI" | tr '\n' '/' | sed 's/.$//')]: " CN
     CF="$(echo "$CN" | awk -F':' '{print $1}')"
     IF="$(echo "$CN" | awk -F':' '{print $2}')"
+
+    [ -z "$IF" ] && printf 'IF is empty\n' && continue
 
     IF_FOUND=no
     for v0 in $LI; do
