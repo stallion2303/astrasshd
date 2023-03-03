@@ -1,7 +1,9 @@
 #!/bin/sh
 
-NAME=${NAME-"astrasshd"}
-TMP=${TMP-"$(mktemp -d)"}
+: ${NAME='astrasshd'}
+: ${TMP="$(mktemp -d)"}
+: ${KEY='/root/.ssh/authorized_keys'}
+
 trap "{ rm -rf -- '$TMP'; }" EXIT
 
 mkdir -p "$TMP/usr/share/initramfs-tools/hooks/"
@@ -26,24 +28,27 @@ esac
 found_host_key=no
 for key_type in dsa ecdsa ed25519 rsa; do
     ssh_host_key=/etc/ssh/ssh_host_"$key_type"_key
-    if [ -f "$ssh_host_key" ] && [ -f "$ssh_host_key".pub ] ; then
+    if [ -f "$ssh_host_key" ] && [ -f "$ssh_host_key".pub ]; then
         copy_file "$ssh_host_key" "$ssh_host_key"
         copy_file "$ssh_host_key".pub /etc/ssh/ssh_host_"$key_type"_key.pub
         found_host_key=yes
     fi
 done
 
-if [ "$found_host_key" = no ]; then
-    echo >&2 "Didn't find any SSH host key!"
-    exit 1
-fi
+[ "$found_host_key" = no ] \
+ && echo "Didn't find any SSH host key!" >&2 \
+ && exit 1
+
+[ -z "$AUTHORIZED_KEYS" ] \
+ && echo 'authorized_keys is not set, use debconf-set-selections' >&2 \
+ && exit 2
 
 if [ -f "$AUTHORIZED_KEYS" ]; then
     copy_file "$AUTHORIZED_KEYS" "$AUTHORIZED_KEYS" /etc/ssh/root_authorized_keys
     chmod 600 "$DESTDIR"/etc/ssh/root_authorized_keys
 else
-    echo >&2 "No authorized_keys for root user found!"
-    exit 1
+    printf 'authorized_keys `%s` not found!\n' "$AUTHORIZED_KEYS" >&2
+    exit 3
 fi
 
 copy_exec /usr/sbin/sshd /sbin/sshd
@@ -94,6 +99,13 @@ prereqs()
      echo "$PREREQ"
 }
 
+case $1 in
+prereqs)
+     prereqs
+     exit 0
+     ;;
+esac
+
 validate_ip()
 {
     if echo "$1" | \
@@ -115,13 +127,6 @@ validate_ip()
         return 1
     fi
 }
-
-case $1 in
-prereqs)
-     prereqs
-     exit 0
-     ;;
-esac
 
 . scripts/functions
 
@@ -156,7 +161,7 @@ while :; do
     for v0 in $LI; do
         [ "$IF" = "$v0" ] && IF_FOUND=yes && break
     done
-    [ "$IF_FOUND" = "no" ] && printf 'IF %s not found\n' "$IF" && continue
+    [ "$IF_FOUND" = "no" ] && printf 'IF `%s` not found\n' "$IF" && continue
 
     case "$CF" in
         dhcp)
@@ -168,11 +173,11 @@ while :; do
             fi
 
             ipconfig -t 30 -c "$CF" -d "$IF"
-            IP="$(ipconfig -n "$IF" | sed -rn 's/^.*address\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')"
+            IP="$(ipconfig -n "$IF" | sed -En 's/^.*address\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+).*$/\1/p')"
 
             echo "Setting up the resolv.conf from dhcp"
             ipconfig -n "$IF" \
-             | sed -rn 's/\s*dns[0-9]+\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/\nnameserver \1\n/gp;\
+             | sed -En 's/\s*dns[0-9]+\s*:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/\nnameserver \1\n/gp;\
                         s/\s*domain\s*:\s*(.+)$/\nsearch \1/p' \
              | grep -E '^(nameserver|search)' >/etc/resolv.conf
 
@@ -184,19 +189,19 @@ while :; do
             GW="$(echo "$CN" | awk -F':' '{print $5}')"
             MA="$(echo "$CN" | awk -F':' '{print $6}')"
 
-            validate_ip "$IP" || { printf 'IP %s not valid\n' "$IP"; continue; }
+            validate_ip "$IP" || { printf 'IP `%s` empty or invalid\n' "$IP"; continue; }
 
             if ! echo "$PR" | \
                 { read a;
                     [ -n "${a##*[!0-9]*}" ] &&
                     [ "$a" -ge 0 ] && [ "$a" -le 32 ]
-                }; then printf 'PREFIX %s not valid\n' "$PR" && continue; fi
+                }; then printf 'PREFIX `%s` empty or invalid\n' "$PR" && continue; fi
 
-            validate_ip "$GW" || { printf 'GW %s not valid\n' "$GW"; continue; }
+            validate_ip "$GW" || { printf 'GW `%s` empty or invalid\n' "$GW"; continue; }
 
             if [ -n "$MA" ]; then
                 [ -z "${MA##*[!0-9A-Fa-f]*}" ] ||
-                [ ${#MA} -ne 12 ] && printf 'MACADDRESS %s not valid\n' "$MA" && continue
+                [ ${#MA} -ne 12 ] && printf 'MACADDRESS `%s` invalid\n' "$MA" && continue
                 ip link set dev "$IF" address "${MA:0:2}:${MA:2:2}:${MA:4:2}:${MA:6:2}:${MA:8:2}:${MA:10:2}"
             fi
 
@@ -223,16 +228,16 @@ OUTPUT
                 DNS2="$(echo "$DNS" | awk -F':' '{print $2}')"
                 SEARCH="$(echo "$DNS" | awk -F':' '{print $3}')"
 
-                validate_ip "$DNS1" || { printf 'DNS1 %s not valid\n' "$DNS1"; continue; }
+                validate_ip "$DNS1" || { printf 'DNS1 `%s` empty or invalid\n' "$DNS1"; continue; }
                 printf "nameserver %s\n" "$DNS1" >/etc/resolv.conf
 
                 if [ -n "$DNS2" ]; then
-                    validate_ip "$DNS2" || { printf 'DNS2 %s not valid\n' "$DNS2"; continue; }
+                    validate_ip "$DNS2" || { printf 'DNS2 `%s` invalid\n' "$DNS2"; continue; }
                     printf "nameserver %s\n" "$DNS2" >>/etc/resolv.conf
                 fi
 
                 if [ -n "$SEARCH" ]; then
-                    [ -z "${SEARCH##*[!0-9a-zA-Z_. -]*}" ] && { printf 'SEARCH %s not valid\n' "$SEARCH"; continue; }
+                    [ -z "${SEARCH##*[!0-9a-zA-Z_. -]*}" ] && { printf 'SEARCH `%s` invalid\n' "$SEARCH"; continue; }
                     printf "search %s\n" "$SEARCH" >>/etc/resolv.conf
                 fi
 
@@ -242,22 +247,27 @@ OUTPUT
             break
             ;;
         *)
-            echo "Valid only static|dhcp"
+            echo 'Valid only static or dhcp'
             continue
             ;;
     esac
 done
 
-if [ "$(hostname)" = '(none)' ]; then
-    echo "Setting the hostname to $IP"
-    hostname "$IP"
-fi
+[ "$(hostname)" = '(none)' ] \
+ && printf 'Setting the hostname to %s\n' "$IP" \
+ && hostname "$IP"
 
-echo "Starting SSH on $IP port 22 ..."
+printf 'Starting SSH on %s port 22 ...\n' "$IP"
 mkdir -p -m 0755 /run/sshd
 /sbin/sshd -4 -D -e
 EOF
 chmod +x "$TMP/usr/share/initramfs-tools/scripts/local-bottom/${NAME}_script"
+
+mkdir -p "$TMP/usr/share/initramfs-tools/conf-hooks.d"
+cat << EOF >"$TMP/usr/share/initramfs-tools/conf-hooks.d/${NAME}"
+# default conf
+export AUTHORIZED_KEYS="$KEY"
+EOF
 
 mkdir -p "$TMP/DEBIAN"
 cat << EOF >"$TMP/DEBIAN/control"
@@ -274,28 +284,39 @@ EOF
 cat << EOF >"$TMP/DEBIAN/postinst"
 #!/bin/sh
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
+CONF='/usr/share/initramfs-tools/conf-hooks.d/$NAME'
 
 . /usr/share/debconf/confmodule
 
 db_get astrasshd/authorized_keys
-echo "export AUTHORIZED_KEYS=\$RET" >/usr/share/initramfs-tools/conf-hooks.d/$NAME
+printf 'export AUTHORIZED_KEYS="%s"\n' "\$RET" >"\$CONF"
 
 if findmnt /boot >/dev/null; then
     /usr/sbin/update-initramfs -u -k all
 else
-    echo -e "\${RED}/boot not mounted\${NC}"
+    printf '\033[0;31m/boot not mounted\033[0m\n'
+    exit 1
 fi
 EOF
 chmod +x "$TMP/DEBIAN/postinst"
 
-cat << \EOF >"$TMP/DEBIAN/templates"
+cat << EOF >"$TMP/DEBIAN/postrm"
+#!/bin/sh
+
+if findmnt /boot >/dev/null; then
+    /usr/sbin/update-initramfs -u -k all
+else
+    printf '\033[0;31m/boot not mounted\033[0m\n'
+    exit 1
+fi
+EOF
+chmod +x "$TMP/DEBIAN/postrm"
+
+cat << EOF >"$TMP/DEBIAN/templates"
 Template: astrasshd/authorized_keys
 Type: string
-Default: /root/.ssh/authorized_keys
-Description: path to root authorized_keys
+Default: $KEY
+Description: Path to root authorized_keys
 EOF
 
 cat << \EOF >"$TMP/DEBIAN/config"
